@@ -15,6 +15,12 @@ import org._
 /**
  * Created by Khrupalik on 29.01.2015.
  */
+
+case class ErrorElement(status: String, text: String)
+
+case class ServiceError(count: String, element: Array[ErrorElement])
+
+
 trait SMSService {
   def send(mobile: String, message: String): Future[Either[ServiceError, String]]
 }
@@ -62,6 +68,8 @@ trait NexmoService extends SMSService {
     val response: Future[JsValue] = WS.url(request).get().map(
       response => response.json
     )
+
+    val status = response.map(json => json \ "messages" \\ "status")
 
     Future(Right("id"))
   }
