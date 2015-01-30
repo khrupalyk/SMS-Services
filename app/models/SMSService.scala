@@ -1,5 +1,7 @@
 package models
 
+import java.net.URLEncoder
+
 import com.typesafe.config.ConfigFactory
 
 import play.api.Logger
@@ -16,62 +18,132 @@ import org._
  * Created by Khrupalik on 29.01.2015.
  */
 
-case class ErrorElement(status: String, text: String)
+abstract class ServiceError
 
-case class ServiceError(count: String, element: Array[ErrorElement])
+case class NexmoError(status: Int, text_error: String) extends ServiceError
 
+case class ClickatellError(status: Int, text_error: String) extends ServiceError
 
 trait SMSService {
   def send(mobile: String, message: String): Future[Either[ServiceError, String]]
 }
 
 trait ClickatellService extends SMSService {
-  def send(mobile: String, message: String): Future[Either[ServiceError, String]] = {
-    //    val smsSender = SmsSender.getClickatellSender("khrupalik", "QfAJAIafHRcFXO", "3523298")
-    //    val msg = message
-    //    val reciever = mobile
-    //    val sender = "SmartChat"
-    //    smsSender.connect()
-    //    val msgids: String = smsSender.sendTextSms(msg, reciever, sender)
-    //    smsSender.disconnect()
-    //    println("Id: " + msgids)
 
+  override def send(mobile: String, message: String): Future[Either[ServiceError, String]] = {
 
-    val request = "http://api.clickatell.com/http/sendmsg?user=khrupalik&password=QfAJAIafHRcFXO&api_id=3523298&to=380961958794&text=Message"
+    val config = ConfigFactory.load()
+    val apiId = config.getString("clickatell.api_id")
+    val user = config.getString("clickatell.user")
+    val password = config.getString("clickatell.password")
 
+    val request: String = ClickatellRequestTemplate
+      .setApiId(apiId)
+      .setUser(user)
+      .setMessage(message)
+      .setPassword(password)
+      .setMobile(mobile)
+      .build()
 
-    val response: Future[WSResponse] = WS.url(request).get()
+    val response = WS.url(request).get()
 
-    Logger.debug("Response: " + response.map(resp => resp.json(1)))
+    response.map(resp =>
+      if (resp.body.contains("OK")) {
+        Right(resp.body.replace("OK:", "").trim)
+      } else {
+        val body: Array[String] = resp.body.split(",")
+        Left(ClickatellError(body(0).replace("ERR:", "").trim.toInt, body(1).trim))
+      }
+    )
 
-    Future(Right("awd"))
   }
+
+  class ClickatellRequestTemplate {
+    private var host: String = "http://api.clickatell.com/http/sendmsg"
+    private var apiId: String = ""
+    private var user: String = ""
+    private var password: String = ""
+    private var message: String = ""
+    private var from: String = "SmartChat"
+    private var phone: String = ""
+
+    def build(): String = {
+      host + "?user=" + user + "&password=" +
+        password + "&from=" + from + "&api_id=" + apiId + "&text=" + URLEncoder.encode(message, "UTF-8") + "&to=" + phone
+    }
+
+    def setApiId(data: String): ClickatellRequestTemplate = {
+      this.apiId = data
+      this
+    }
+
+    def setUser(data: String): ClickatellRequestTemplate = {
+      this.user = data
+      this
+    }
+
+    def setPassword(data: String): ClickatellRequestTemplate = {
+      this.password = data
+      this
+    }
+
+    def setHost(data: String): ClickatellRequestTemplate = {
+      this.host = data
+      this
+    }
+
+    def setMobile(data: String): ClickatellRequestTemplate = {
+      this.phone = data
+      this
+    }
+
+    def setMessage(data: String): ClickatellRequestTemplate = {
+      this.message = data
+      this
+    }
+
+    def setTitle(data: String): ClickatellRequestTemplate = {
+      this.from = data
+      this
+    }
+  }
+
+  object ClickatellRequestTemplate extends ClickatellRequestTemplate
+
 }
 
 trait NexmoService extends SMSService {
 
   val config = ConfigFactory.load()
-  //  val template = S"https://rest.nexmo.com/sms/$type"
 
   override def send(mobile: String, message: String): Future[Either[ServiceError, String]] = {
 
+    val apiKey = config.getString("nexmo.api_key")
+    val apiSecret = config.getString("nexmo.api_secret")
 
-    val request = NexmoRequestTemplate.setApiKey("53fbbbe0")
-      .setApiSecret("bb911ac1")
+    val request = NexmoRequestTemplate
+      .setApiKey(apiKey)
+      .setApiSecret(apiSecret)
       .setDataType("json")
       .setMessage(message)
-      .setPhone(mobile)
+      .setMobile(mobile)
       .build()
 
-
-
-    val response: Future[JsValue] = WS.url(request).get().map(
+    val response: Future[JsValue] = WS.url(request).withRequestTimeout(5000).get().map(
       response => response.json
     )
 
-    val status = response.map(json => json \ "messages" \\ "status")
-
-    Future(Right("id"))
+    response.map(json => json \ "messages").map {
+      js => {
+        val code = (js \\ "status").toList(0).toString().replace("\"", "").toInt
+        if (code != 0) {
+          val errorText = (js \\ "error-text").toList(0).toString().replace("\"", "")
+          Left(NexmoError(code, errorText))
+        } else {
+          Right((js \\ "message-id").toList(0).toString().replace("\"", ""))
+        }
+      }
+    }
   }
 
   class NexmoRequestTemplate {
@@ -83,7 +155,12 @@ trait NexmoService extends SMSService {
     private var message: String = ""
     private var from: String = "SmartChat"
 
-    def setPhone(data: String): NexmoRequestTemplate = {
+    def setTitle(data: String): NexmoRequestTemplate = {
+      this.from = data
+      this
+    }
+
+    def setMobile(data: String): NexmoRequestTemplate = {
       this.phone = data
       this
     }
@@ -115,9 +192,8 @@ trait NexmoService extends SMSService {
 
     def build(): String = {
       host + dataType + "?api_key=" + apiKey + "&api_secret=" +
-        apiSecret + "&from=" + from + "&to=" + phone + "&text=" + message
+        apiSecret + "&from=" + from + "&to=" + phone + "&text=" + URLEncoder.encode(message, "UTF-8")
     }
-
 
   }
 
